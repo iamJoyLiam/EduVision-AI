@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TitleBar } from "@/components/TitleBar";
 import { FormulaSidebar } from "@/components/FormulaSidebar";
-import { ParamSlider } from "@/components/ParamSlider";
 import { AIPanel } from "@/components/AIPanel";
 import { CanvasToolbar } from "@/components/CanvasToolbar";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -130,6 +129,9 @@ export default function App() {
           stage={stage}
           onSubjectChange={setSubject}
           onStageChange={setStage}
+          params={{}}
+          topicParams={[]}
+          onParamChange={() => {}}
         />
         <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
           本学段暂无内容
@@ -147,6 +149,11 @@ export default function App() {
         stage={stage}
         onSubjectChange={setSubject}
         onStageChange={setStage}
+        params={params}
+        topicParams={activeTopic.params}
+        onParamChange={(key, value) =>
+          setOverrides((prev) => ({ ...prev, [key]: value }))
+        }
       />
 
       <div className="flex-1 flex min-h-0">
@@ -238,31 +245,9 @@ export default function App() {
             </button>
 
             {/* 面板内容 */}
-            <div className="px-6 pb-4 grid grid-cols-12 gap-6">
-              {/* 参数滑块 */}
-              <div className="col-span-5 space-y-3">
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-                  参数控制
-                </div>
-                <div className="space-y-3">
-                  {activeTopic.params.map((paramDef) => (
-                    <ParamSlider
-                      key={paramDef.key}
-                      def={paramDef}
-                      value={params[paramDef.key] ?? paramDef.default}
-                      onChange={(newValue) =>
-                        setOverrides((prev) => ({
-                          ...prev,
-                          [paramDef.key]: newValue,
-                        }))
-                      }
-                    />
-                  ))}
-                </div>
-              </div>
-
+            <div className="px-6 pb-4 grid grid-cols-3 gap-6">
               {/* 分步演示 */}
-              <div className="col-span-4 space-y-2">
+              <div className="col-span-2 space-y-2">
                 <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold flex items-center justify-between">
                   <span>分步演示</span>
                   <span className="text-muted-foreground/70 normal-case tracking-normal">
@@ -325,7 +310,7 @@ export default function App() {
               </div>
 
               {/* 教学提示 */}
-              <div className="col-span-3 space-y-2">
+              <div className="col-span-1 space-y-2">
                 <div className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
                   教学提示
                 </div>
