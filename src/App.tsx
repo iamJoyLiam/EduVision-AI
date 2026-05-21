@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TitleBar } from "@/components/TitleBar";
 import { FormulaSidebar } from "@/components/FormulaSidebar";
+import { SolveHistory } from "@/components/SolveHistory";
+import { SolvePanel } from "@/components/SolvePanel";
 import { AIPanel } from "@/components/AIPanel";
 import { CanvasToolbar } from "@/components/CanvasToolbar";
 import { SettingsModal } from "@/components/SettingsModal";
@@ -18,6 +20,7 @@ import { VIZ } from "@/visualizations";
 import { usePlayback } from "@/visualizations/use-playback";
 import { PlaybackControls } from "@/components/PlaybackControls";
 import { useUIStore } from "@/lib/ui-store";
+import { useSolveStore } from "@/lib/solve-store";
 import {
   ChevronUp,
   ChevronDown,
@@ -34,12 +37,16 @@ function findDefaultStage(subject: Subject): Stage {
 }
 
 export default function App() {
-  // Initialize SQLite and hydrate store
+  // Initialize SQLite and hydrate stores
   useEffect(() => {
-    db.init().then(() => useAIStore.getState().hydrate());
+    db.init().then(() => {
+      useAIStore.getState().hydrate();
+      useSolveStore.getState().loadFromDb();
+    });
     return () => {
       db.flushSettings();
       db.flushAllSessions();
+      db.flushSolveSessions();
     };
   }, []);
 
@@ -62,7 +69,7 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  const { bottomOpen, toggleBottom, settingsOpen } = useUIStore();
+  const { bottomOpen, toggleBottom, settingsOpen, mode } = useUIStore();
 
   // 从 activeTopic 默认值 + 用户覆盖合并出实际参数，保证同一帧更新
   const params: Record<string, number> = useMemo(() => {
@@ -121,6 +128,29 @@ export default function App() {
     setShowGrid(false);
   };
 
+  // ── Solve mode ──
+  if (mode === "solve") {
+    return (
+      <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">
+        <TitleBar
+          subject={subject}
+          stage={stage}
+          onSubjectChange={setSubject}
+          onStageChange={setStage}
+          params={{}}
+          topicParams={[]}
+          onParamChange={() => {}}
+        />
+        <div className="flex-1 flex min-h-0">
+          <SolveHistory />
+          <SolvePanel />
+        </div>
+        <SettingsModal open={settingsOpen} />
+      </div>
+    );
+  }
+
+  // ── Browse mode ──
   if (!activeTopic) {
     return (
       <div className="h-screen w-screen flex flex-col bg-background overflow-hidden">

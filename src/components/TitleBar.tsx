@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Search, Plus, PanelLeft, Sparkles, GripVertical, X } from "lucide-react";
+import { Search, Plus, PanelLeft, Sparkles, GripVertical, X, BrainCircuit } from "lucide-react";
 import {
   SUBJECT_LABELS,
   STAGE_LABELS,
@@ -33,7 +33,7 @@ export function TitleBar({
   topicParams,
   onParamChange,
 }: TitleBarProps) {
-  const { leftOpen, rightOpen, toggleLeft, toggleRight } = useUIStore();
+  const { leftOpen, rightOpen, mode, setMode, toggleLeft, toggleRight } = useUIStore();
   const os = usePlatform();
 
   // 参数弹出面板状态
@@ -214,6 +214,17 @@ export function TitleBar({
             aria-pressed={paramOpen}
           >
             <Plus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setMode(mode === "solve" ? "browse" : "solve")}
+            className={[
+              "p-1.5 rounded-md transition-colors",
+              mode === "solve" ? "bg-pink/15 text-pink" : "hover:bg-muted",
+            ].join(" ")}
+            aria-label="AI 解题"
+            aria-pressed={mode === "solve"}
+          >
+            <BrainCircuit className="w-4 h-4" />
           </button>
           <button
             onClick={toggleRight}

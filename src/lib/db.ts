@@ -34,6 +34,16 @@ export async function init(): Promise<void> {
       )
     `);
 
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS solve_sessions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        original_prompt TEXT NOT NULL,
+        response_json TEXT NOT NULL DEFAULT 'null',
+        created_at INTEGER NOT NULL
+      )
+    `);
+
     await migrateFromLocalStorage();
   } catch (err) {
     console.error("[db] Failed to initialize SQLite:", err);
@@ -260,4 +270,102 @@ export async function flushAllSessions(): Promise<void> {
     }
   }
   pendingSessions.clear();
+}
+
+// ── Solve Sessions ──
+
+export interface SolveSessionRow {
+  id: string;
+  title: string;
+  original_prompt: string;
+  response_json: string;
+  created_at: number;
+}
+
+const solveDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingSolveSessions = new Map<
+  string,
+  { title: string; originalPrompt: string; responseJson: string; createdAt: number }
+>();
+const SOLVE_DEBOUNCE_MS = 1000;
+
+export async function loadSolveSessions(): Promise<SolveSessionRow[]> {
+  if (!db) return [];
+
+  try {
+    return await db.select<SolveSessionRow[]>(
+      "SELECT id, title, original_prompt, response_json, created_at FROM solve_sessions ORDER BY created_at DESC"
+    );
+  } catch (err) {
+    console.error("[db] Failed to load solve sessions:", err);
+    return [];
+  }
+}
+
+export function saveSolveSession(
+  id: string,
+  title: string,
+  originalPrompt: string,
+  responseJson: string,
+  createdAt: number,
+): void {
+  pendingSolveSessions.set(id, { title, originalPrompt, responseJson, createdAt });
+
+  const existing = solveDebounceTimers.get(id);
+  if (existing) clearTimeout(existing);
+
+  solveDebounceTimers.set(
+    id,
+    setTimeout(async () => {
+      solveDebounceTimers.delete(id);
+      const data = pendingSolveSessions.get(id);
+      if (!data || !db) return;
+      pendingSolveSessions.delete(id);
+
+      try {
+        await db.execute(
+          "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, created_at) VALUES ($1, $2, $3, $4, $5)",
+          [id, data.title, data.originalPrompt, data.responseJson, data.createdAt]
+        );
+      } catch (err) {
+        console.error("[db] Failed to save solve session:", err);
+        pendingSolveSessions.set(id, data);
+      }
+    }, SOLVE_DEBOUNCE_MS)
+  );
+}
+
+export async function deleteSolveSessionFromDb(id: string): Promise<void> {
+  const timer = solveDebounceTimers.get(id);
+  if (timer) clearTimeout(timer);
+  solveDebounceTimers.delete(id);
+  pendingSolveSessions.delete(id);
+
+  if (!db) return;
+
+  try {
+    await db.execute("DELETE FROM solve_sessions WHERE id = $1", [id]);
+  } catch (err) {
+    console.error("[db] Failed to delete solve session:", err);
+  }
+}
+
+export async function flushSolveSessions(): Promise<void> {
+  if (!db || pendingSolveSessions.size === 0) return;
+
+  for (const [id, data] of pendingSolveSessions) {
+    const timer = solveDebounceTimers.get(id);
+    if (timer) clearTimeout(timer);
+    solveDebounceTimers.delete(id);
+
+    try {
+      await db.execute(
+        "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, created_at) VALUES ($1, $2, $3, $4, $5)",
+        [id, data.title, data.originalPrompt, data.responseJson, data.createdAt]
+      );
+    } catch (err) {
+      console.error("[db] Failed to flush solve session:", err);
+    }
+  }
+  pendingSolveSessions.clear();
 }
