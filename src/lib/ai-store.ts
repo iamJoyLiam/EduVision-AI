@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import * as db from "./db";
+import { getProviders } from "./ai-api";
 
 export interface AIProvider {
   id: string;
@@ -8,6 +9,7 @@ export interface AIProvider {
   modelId: string;
   maxTokens: number;
   hasApiKey: boolean;
+  apiKeyMasked?: string;
   modelList?: string[];
   apiStyle?: "responses" | "chat-completions";
   reasoningLevel?: "off" | "low" | "medium" | "high";
@@ -107,6 +109,7 @@ interface AIState {
   // DB integration
   hydrate: () => Promise<void>;
   saveSettings: () => void;
+  refreshProviders: () => Promise<void>;
 
   setEnabled: (v: boolean) => void;
   setShowError: (v: boolean) => void;
@@ -185,6 +188,29 @@ export const useAIStore = create<AIState>()((set, get) => ({
       contextWindowSize: s.contextWindowSize,
       privacyMode: s.privacyMode,
     });
+  },
+
+  refreshProviders: async () => {
+    try {
+      const backendProviders = await getProviders();
+      set({
+        providers: backendProviders.map((p) => ({
+          id: String(p.id),
+          name: p.name,
+          endpoint: p.endpoint,
+          modelId: p.modelId,
+          maxTokens: p.maxTokens,
+          hasApiKey: p.hasApiKey,
+          apiKeyMasked: p.apiKeyMasked,
+          modelList: p.modelList,
+          apiStyle: p.apiStyle,
+          reasoningLevel: p.reasoningLevel,
+          temperature: p.temperature,
+        })),
+      });
+    } catch {
+      /* ignore */
+    }
   },
 
   setEnabled: (v) => {

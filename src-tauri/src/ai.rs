@@ -32,6 +32,7 @@ pub struct ProviderView {
     pub model_id: String,
     pub max_tokens: u32,
     pub has_api_key: bool,
+    pub api_key_masked: Option<String>,
     pub model_list: Option<Vec<String>>,
     pub api_style: Option<String>,
     pub reasoning_level: Option<String>,
@@ -57,11 +58,47 @@ pub struct TestResult {
     pub error: String,
 }
 
-// ── API Key storage (file-based) ──
+// ── API Key storage (AES-256-GCM encrypted) ──
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
+use aes_gcm::aead::Aead;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+fn derive_key(app: &AppHandle) -> [u8; 32] {
+    let dir = app.path().app_data_dir().expect("failed to get app data dir");
+    let mut key = [0u8; 32];
+    let password = format!("eduvision-ai-{}", dir.display());
+    let _ = pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(password.as_bytes(), b"eduvision-salt-v1", 100_000, &mut key);
+    key
+}
+
+fn encrypt_value(app: &AppHandle, plaintext: &str) -> Result<String, String> {
+    let key_bytes = derive_key(app);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let mut nonce_bytes = [0u8; 12];
+    getrandom::getrandom(&mut nonce_bytes).map_err(|e| e.to_string())?;
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, plaintext.as_bytes()).map_err(|e| e.to_string())?;
+    // Format: base64(nonce + ciphertext)
+    let mut combined = nonce_bytes.to_vec();
+    combined.extend_from_slice(&ciphertext);
+    Ok(BASE64.encode(&combined))
+}
+
+fn decrypt_value(app: &AppHandle, encrypted: &str) -> Result<String, String> {
+    let combined = BASE64.decode(encrypted).map_err(|e| e.to_string())?;
+    if combined.len() < 12 {
+        return Err("invalid encrypted data".to_string());
+    }
+    let key_bytes = derive_key(app);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+    let nonce = Nonce::from_slice(&combined[..12]);
+    let plaintext = cipher.decrypt(nonce, &combined[12..]).map_err(|e| e.to_string())?;
+    String::from_utf8(plaintext).map_err(|e| e.to_string())
+}
 
 fn keys_path(app: &AppHandle) -> PathBuf {
     let dir = app
@@ -69,10 +106,33 @@ fn keys_path(app: &AppHandle) -> PathBuf {
         .app_data_dir()
         .expect("failed to get app data dir");
     fs::create_dir_all(&dir).ok();
-    dir.join("keys.json")
+    dir.join("keys.enc.json")
+}
+
+/// Migrate from old plaintext keys.json if it exists
+fn migrate_plaintext_keys(app: &AppHandle) {
+    let dir = app.path().app_data_dir().expect("failed to get app data dir");
+    let old_path = dir.join("keys.json");
+    let new_path = dir.join("keys.enc.json");
+    if old_path.exists() && !new_path.exists() {
+        if let Ok(data) = fs::read_to_string(&old_path) {
+            if let Ok(old_keys) = serde_json::from_str::<HashMap<String, String>>(&data) {
+                let mut new_keys = HashMap::new();
+                for (id, key) in &old_keys {
+                    if let Ok(enc) = encrypt_value(app, key) {
+                        new_keys.insert(id.clone(), enc);
+                    }
+                }
+                let json = serde_json::to_string_pretty(&new_keys).unwrap_or_default();
+                let _ = fs::write(&new_path, json);
+                let _ = fs::remove_file(&old_path);
+            }
+        }
+    }
 }
 
 fn load_keys(app: &AppHandle) -> HashMap<String, String> {
+    migrate_plaintext_keys(app);
     let path = keys_path(app);
     if !path.exists() {
         return HashMap::new();
@@ -89,12 +149,23 @@ fn save_keys(app: &AppHandle, keys: &HashMap<String, String>) -> Result<(), Stri
 
 fn get_api_key(app: &AppHandle, provider_id: &str) -> Option<String> {
     let keys = load_keys(app);
-    keys.get(provider_id).filter(|s| !s.is_empty()).cloned()
+    keys.get(provider_id)
+        .filter(|s| !s.is_empty())
+        .and_then(|enc| decrypt_value(app, enc).ok())
+}
+
+/// Returns the decrypted API key for display
+fn get_api_key_display(app: &AppHandle, provider_id: &str) -> Option<String> {
+    let keys = load_keys(app);
+    keys.get(provider_id)
+        .filter(|s| !s.is_empty())
+        .and_then(|enc| decrypt_value(app, enc).ok())
 }
 
 fn set_api_key(app: &AppHandle, provider_id: &str, key: &str) -> Result<(), String> {
     let mut keys = load_keys(app);
-    keys.insert(provider_id.to_string(), key.to_string());
+    let encrypted = encrypt_value(app, key)?;
+    keys.insert(provider_id.to_string(), encrypted);
     save_keys(app, &keys)
 }
 
@@ -134,17 +205,21 @@ fn is_responses_api(api_style: &Option<String>) -> bool {
 pub fn get_providers(app: AppHandle) -> Vec<ProviderView> {
     store::load_providers(&app)
         .into_iter()
-        .map(|p| ProviderView {
-            has_api_key: get_api_key(&app, &p.id).is_some(),
-            id: p.id,
-            name: p.name,
-            endpoint: p.endpoint,
-            model_id: p.model_id,
-            max_tokens: p.max_tokens,
-            model_list: p.model_list,
-            api_style: p.api_style,
-            reasoning_level: p.reasoning_level,
-            temperature: p.temperature,
+        .map(|p| {
+            let has_api_key = get_api_key(&app, &p.id).is_some();
+            ProviderView {
+                api_key_masked: if has_api_key { get_api_key_display(&app, &p.id) } else { None },
+                has_api_key,
+                id: p.id,
+                name: p.name,
+                endpoint: p.endpoint,
+                model_id: p.model_id,
+                max_tokens: p.max_tokens,
+                model_list: p.model_list,
+                api_style: p.api_style,
+                reasoning_level: p.reasoning_level,
+                temperature: p.temperature,
+            }
         })
         .collect()
 }
@@ -205,8 +280,8 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
     } else {
         build_endpoint(&provider.endpoint, provider.api_style.as_deref().unwrap_or("chat-completions"))
     };
-
     let api_key = resolve_api_key(&app, &provider.id, &provider.api_key);
+    println!("[test_connection] url={url} is_claude={is_claude} is_resp={is_resp} api_key_len={}", api_key.len());
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -223,15 +298,25 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
         );
     }
 
+    // Require model_id for testing — no fallback guesses
+    if provider.model_id.is_empty() {
+        return TestResult {
+            ok: false,
+            error: "请先填写模型 ID 再测试连接".to_string(),
+        };
+    }
+    let test_model = &provider.model_id;
+    println!("[test_connection] test_model={test_model} model_id_empty={}", provider.model_id.is_empty());
+
     let body = if is_resp {
         serde_json::json!({
-            "model": provider.model_id,
+            "model": test_model,
             "input": [{"role": "user", "content": "hi"}],
             "max_output_tokens": 1
         })
     } else {
         serde_json::json!({
-            "model": provider.model_id,
+            "model": test_model,
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}]
         })
@@ -253,87 +338,118 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
             } else {
                 let status = res.status().as_u16();
                 let text = res.text().await.unwrap_or_default();
+                println!("[test_connection] error response: HTTP {status} body={text}");
                 TestResult {
                     ok: false,
-                    error: format!("HTTP {status}: {}", &text[..text.len().min(120)]),
+                    error: format!("HTTP {status} [{url}]: {}", &text[..text.len().min(300)]),
                 }
             }
         }
         Err(e) => TestResult {
             ok: false,
-            error: e.to_string(),
+            error: format!("{} [{url}]", e),
         },
     }
 }
 
 #[tauri::command]
 pub async fn fetch_models(app: AppHandle, provider: ProviderInput) -> Vec<String> {
-    let is_claude =
-        provider.endpoint.contains("anthropic") || provider.name.eq_ignore_ascii_case("claude");
-
     let api_key = resolve_api_key(&app, &provider.id, &provider.api_key);
 
-    // Try live /models endpoint — extract base URL if endpoint already contains /v1/
+    // Build candidate model endpoint URLs, stripping known provider suffixes
+    // (e.g. /anthropic, /api/coding) to try the root domain — same approach as cc-switch
     let base = provider.endpoint.trim_end_matches('/');
     let base = if let Some(pos) = base.find("/v1/") {
         &base[..pos]
     } else {
         base
     };
-    let models_url = format!("{base}/v1/models");
+
+    let known_suffixes = &[
+        "/api/claudecode", "/api/anthropic", "/apps/anthropic", "/api/coding",
+        "/claudecode", "/anthropic", "/step_plan", "/coding", "/claude",
+    ];
+
+    let mut roots: Vec<&str> = vec![base];
+    // Try stripping the longest matching suffix first
+    for suffix in known_suffixes {
+        if base.ends_with(suffix) {
+            let stripped = &base[..base.len() - suffix.len()];
+            if !stripped.is_empty() && !roots.contains(&stripped) {
+                roots.push(stripped);
+            }
+        }
+    }
+
+    let mut candidate_urls: Vec<String> = Vec::new();
+    for root in &roots {
+        let url = format!("{root}/v1/models");
+        if !candidate_urls.contains(&url) { candidate_urls.push(url); }
+        let url = format!("{root}/models");
+        if !candidate_urls.contains(&url) { candidate_urls.push(url); }
+    }
 
     let mut headers = reqwest::header::HeaderMap::new();
-    if is_claude {
-        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-        if !api_key.is_empty() {
-            headers.insert("x-api-key", api_key.parse().unwrap());
-        }
-    } else if !api_key.is_empty() {
+    if !api_key.is_empty() {
+        headers.insert("x-api-key", api_key.parse().unwrap());
         headers.insert(
             "Authorization",
             format!("Bearer {}", api_key).parse().unwrap(),
         );
     }
+    headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
 
-    if let Ok(res) = reqwest::Client::new()
-        .get(&models_url)
-        .headers(headers)
-        .send()
-        .await
-    {
-        if res.status().is_success() {
-            if let Ok(data) = res.json::<serde_json::Value>().await {
-                if let Some(arr) = data["data"].as_array() {
-                    let mut models: Vec<String> = arr
-                        .iter()
-                        .filter_map(|m| m["id"].as_str().map(String::from))
-                        .collect();
-                    models.sort();
-                    if !models.is_empty() {
-                        return models;
+    let client = reqwest::Client::new();
+    for models_url in &candidate_urls {
+        println!("[fetch_models] trying {models_url}");
+        if let Ok(res) = client
+            .get(models_url)
+            .headers(headers.clone())
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            let status = res.status();
+            if status.is_success() {
+                if let Ok(data) = res.json::<serde_json::Value>().await {
+                    let arr = data["data"].as_array().or_else(|| data.as_array());
+                    if let Some(arr) = arr {
+                        let mut models: Vec<String> = arr
+                            .iter()
+                            .filter_map(|m| m["id"].as_str().map(String::from))
+                            .collect();
+                        models.sort();
+                        if !models.is_empty() {
+                            println!("[fetch_models] got {} models from {models_url}", models.len());
+                            return models;
+                        }
                     }
                 }
+            } else {
+                println!("[fetch_models] {models_url} -> HTTP {status}");
             }
         }
     }
+    println!("[fetch_models] all endpoints failed, returning empty");
 
-    // Fallback to hardcoded lists
+    // Fallback only for known built-in providers (by name).
+    // Custom/third-party proxies return empty — user enters model ID manually.
     let name = provider.name.to_lowercase();
-    if name.contains("openai") {
-        return vec![
-            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
-            "o3", "o3-mini", "o4-mini", "o1", "o1-mini", "o1-pro",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    }
-    if name.contains("claude") {
+    if name.contains("claude") || name.contains("anthropic") {
         return vec![
             "claude-opus-4-20250514",
             "claude-sonnet-4-20250514",
             "claude-3-5-haiku-20241022",
             "claude-3-5-sonnet-20241022",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    }
+    if name.contains("openai") {
+        return vec![
+            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
+            "o3", "o3-mini", "o4-mini", "o1", "o1-mini", "o1-pro",
         ]
         .into_iter()
         .map(String::from)
@@ -375,6 +491,7 @@ pub async fn fetch_models(app: AppHandle, provider: ProviderInput) -> Vec<String
             .collect();
     }
 
+    // Unknown provider — no hardcoded fallback
     vec![]
 }
 
@@ -387,6 +504,9 @@ pub async fn stream_chat(
 ) -> Result<(), String> {
     let config = store::get_provider(&app, &provider_id)
         .ok_or_else(|| format!("provider {provider_id} not found"))?;
+    if config.model_id.is_empty() {
+        return Err("请先在设置中选择一个模型".to_string());
+    }
     let api_key = get_api_key(&app, &provider_id).unwrap_or_default();
 
     let is_claude =
@@ -402,6 +522,7 @@ pub async fn stream_chat(
     } else {
         build_endpoint(&config.endpoint, config.api_style.as_deref().unwrap_or("chat-completions"))
     };
+    println!("[stream_chat] url={url} is_claude={is_claude} is_resp={is_resp}");
 
     let client = reqwest::Client::new();
 

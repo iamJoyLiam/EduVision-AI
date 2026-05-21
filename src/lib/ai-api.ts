@@ -90,6 +90,7 @@ export interface ProviderView {
   modelId: string;
   maxTokens: number;
   hasApiKey: boolean;
+  apiKeyMasked?: string;
   modelList?: string[];
   apiStyle?: "responses" | "chat-completions";
   reasoningLevel?: "off" | "low" | "medium" | "high";

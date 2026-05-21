@@ -66,6 +66,11 @@ export function SettingsModal({ open }: SettingsModalProps) {
   const closeSettings = useUIStore((s) => s.closeSettings);
   const os = usePlatform();
   const [activeTab, setActiveTab] = useState<Tab>("ai");
+  const refreshProviders = useAIStore((s) => s.refreshProviders);
+
+  useEffect(() => {
+    if (open) refreshProviders();
+  }, [open]);
 
   if (!open) return null;
 
@@ -518,7 +523,7 @@ function ProviderEditorDialog({
   onClose: () => void;
 }) {
   const [form, setForm] = useState({ ...provider });
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(provider.apiKeyMasked ?? "");
   const [showKey, setShowKey] = useState(false);
   const [testStatus, setTestStatus] = useState<
     "idle" | "testing" | "success" | "error"
@@ -550,7 +555,8 @@ function ProviderEditorDialog({
     id: form.id || Date.now().toString(),
     name: form.name,
     endpoint: form.endpoint,
-    apiKey,
+    // Don't send the masked key back — only send if user typed a new one
+    apiKey: apiKey === provider.apiKeyMasked ? "" : apiKey,
     modelId: form.modelId,
     maxTokens: form.maxTokens,
     modelList: form.modelList,
@@ -644,9 +650,7 @@ function ProviderEditorDialog({
                     type={showKey ? "text" : "password"}
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={
-                      form.hasApiKey ? "已保存密钥，输入新密钥可替换" : "sk-..."
-                    }
+                    placeholder="sk-..."
                     className="w-56 h-7 text-xs rounded-l-md bg-surface-elevated border border-border border-r-0 px-2 outline-none focus:ring-2 focus:ring-ring/40"
                   />
                   <button
