@@ -1,7 +1,10 @@
 use crate::store::{self, ProviderConfig};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Manager};
+use tauri::ipc::Channel;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_util::io::StreamReader;
 
 // ── Types ──
 
@@ -54,32 +57,67 @@ pub struct TestResult {
     pub error: String,
 }
 
-// ── Keyring helpers ──
+// ── API Key storage (file-based) ──
 
-fn keyring_entry(provider_id: &str) -> keyring::Entry {
-    keyring::Entry::new("eduvision-ai", &format!("provider_{provider_id}"))
-        .expect("failed to create keyring entry")
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+fn keys_path(app: &AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .expect("failed to get app data dir");
+    fs::create_dir_all(&dir).ok();
+    dir.join("keys.json")
 }
 
-fn get_api_key(provider_id: &str) -> Option<String> {
-    keyring_entry(provider_id)
-        .get_password()
-        .ok()
-        .filter(|s| !s.is_empty())
+fn load_keys(app: &AppHandle) -> HashMap<String, String> {
+    let path = keys_path(app);
+    if !path.exists() {
+        return HashMap::new();
+    }
+    let data = fs::read_to_string(&path).unwrap_or_default();
+    serde_json::from_str(&data).unwrap_or_default()
 }
 
-fn set_api_key(provider_id: &str, key: &str) -> Result<(), String> {
-    keyring_entry(provider_id)
-        .set_password(key)
-        .map_err(|e| format!("keyring error: {e}"))
+fn save_keys(app: &AppHandle, keys: &HashMap<String, String>) -> Result<(), String> {
+    let path = keys_path(app);
+    let json = serde_json::to_string_pretty(keys).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
 }
 
-fn delete_api_key(provider_id: &str) {
-    keyring_entry(provider_id).delete_credential().ok();
+fn get_api_key(app: &AppHandle, provider_id: &str) -> Option<String> {
+    let keys = load_keys(app);
+    keys.get(provider_id).filter(|s| !s.is_empty()).cloned()
+}
+
+fn set_api_key(app: &AppHandle, provider_id: &str, key: &str) -> Result<(), String> {
+    let mut keys = load_keys(app);
+    keys.insert(provider_id.to_string(), key.to_string());
+    save_keys(app, &keys)
+}
+
+fn delete_api_key(app: &AppHandle, provider_id: &str) {
+    let mut keys = load_keys(app);
+    keys.remove(provider_id);
+    let _ = save_keys(app, &keys);
+}
+
+/// Use the provided key if non-empty, otherwise fall back to stored key.
+fn resolve_api_key(app: &AppHandle, provider_id: &str, provided: &str) -> String {
+    if !provided.is_empty() {
+        return provided.to_string();
+    }
+    get_api_key(app, provider_id).unwrap_or_default()
 }
 
 fn build_endpoint(base: &str, api_style: &str) -> String {
     let base = base.trim_end_matches('/');
+    // Don't append if the endpoint already contains the full path
+    if base.contains("/v1/") {
+        return base.to_string();
+    }
     match api_style {
         "responses" => format!("{base}/v1/responses"),
         _ => format!("{base}/v1/chat/completions"),
@@ -97,7 +135,7 @@ pub fn get_providers(app: AppHandle) -> Vec<ProviderView> {
     store::load_providers(&app)
         .into_iter()
         .map(|p| ProviderView {
-            has_api_key: get_api_key(&p.id).is_some(),
+            has_api_key: get_api_key(&app, &p.id).is_some(),
             id: p.id,
             name: p.name,
             endpoint: p.endpoint,
@@ -113,9 +151,9 @@ pub fn get_providers(app: AppHandle) -> Vec<ProviderView> {
 
 #[tauri::command]
 pub fn save_provider(app: AppHandle, provider: ProviderInput) -> Result<(), String> {
-    // Save API key to keyring
+    // Save API key to file
     if !provider.api_key.is_empty() {
-        set_api_key(&provider.id, &provider.api_key)?;
+        set_api_key(&app, &provider.id, &provider.api_key)?;
     }
 
     // Save config to file
@@ -143,7 +181,7 @@ pub fn save_provider(app: AppHandle, provider: ProviderInput) -> Result<(), Stri
 
 #[tauri::command]
 pub fn remove_provider(app: AppHandle, id: String) -> Result<(), String> {
-    delete_api_key(&id);
+    delete_api_key(&app, &id);
     let providers: Vec<_> = store::load_providers(&app)
         .into_iter()
         .filter(|p| p.id != id)
@@ -152,29 +190,36 @@ pub fn remove_provider(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn test_connection(provider: ProviderInput) -> TestResult {
+pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestResult {
     let client = reqwest::Client::new();
     let is_claude =
         provider.endpoint.contains("anthropic") || provider.name.eq_ignore_ascii_case("claude");
     let is_resp = is_responses_api(&provider.api_style);
     let url = if is_claude {
-        format!("{}/v1/messages", provider.endpoint.trim_end_matches('/'))
+        let base = provider.endpoint.trim_end_matches('/');
+        if base.contains("/v1/") {
+            base.to_string()
+        } else {
+            format!("{base}/v1/messages")
+        }
     } else {
         build_endpoint(&provider.endpoint, provider.api_style.as_deref().unwrap_or("chat-completions"))
     };
+
+    let api_key = resolve_api_key(&app, &provider.id, &provider.api_key);
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
 
     if is_claude {
         headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-        if !provider.api_key.is_empty() {
-            headers.insert("x-api-key", provider.api_key.parse().unwrap());
+        if !api_key.is_empty() {
+            headers.insert("x-api-key", api_key.parse().unwrap());
         }
-    } else if !provider.api_key.is_empty() {
+    } else if !api_key.is_empty() {
         headers.insert(
             "Authorization",
-            format!("Bearer {}", provider.api_key).parse().unwrap(),
+            format!("Bearer {}", api_key).parse().unwrap(),
         );
     }
 
@@ -222,23 +267,31 @@ pub async fn test_connection(provider: ProviderInput) -> TestResult {
 }
 
 #[tauri::command]
-pub async fn fetch_models(provider: ProviderInput) -> Vec<String> {
+pub async fn fetch_models(app: AppHandle, provider: ProviderInput) -> Vec<String> {
     let is_claude =
         provider.endpoint.contains("anthropic") || provider.name.eq_ignore_ascii_case("claude");
 
-    // Try live /models endpoint
-    let models_url = format!("{}/v1/models", provider.endpoint.trim_end_matches('/'));
+    let api_key = resolve_api_key(&app, &provider.id, &provider.api_key);
+
+    // Try live /models endpoint — extract base URL if endpoint already contains /v1/
+    let base = provider.endpoint.trim_end_matches('/');
+    let base = if let Some(pos) = base.find("/v1/") {
+        &base[..pos]
+    } else {
+        base
+    };
+    let models_url = format!("{base}/v1/models");
 
     let mut headers = reqwest::header::HeaderMap::new();
     if is_claude {
         headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-        if !provider.api_key.is_empty() {
-            headers.insert("x-api-key", provider.api_key.parse().unwrap());
+        if !api_key.is_empty() {
+            headers.insert("x-api-key", api_key.parse().unwrap());
         }
-    } else if !provider.api_key.is_empty() {
+    } else if !api_key.is_empty() {
         headers.insert(
             "Authorization",
-            format!("Bearer {}", provider.api_key).parse().unwrap(),
+            format!("Bearer {}", api_key).parse().unwrap(),
         );
     }
 
@@ -330,16 +383,22 @@ pub async fn stream_chat(
     app: AppHandle,
     provider_id: String,
     messages: Vec<ChatMessage>,
+    on_event: Channel<TokenPayload>,
 ) -> Result<(), String> {
     let config = store::get_provider(&app, &provider_id)
         .ok_or_else(|| format!("provider {provider_id} not found"))?;
-    let api_key = get_api_key(&provider_id).unwrap_or_default();
+    let api_key = get_api_key(&app, &provider_id).unwrap_or_default();
 
     let is_claude =
         config.endpoint.contains("anthropic") || config.name.eq_ignore_ascii_case("claude");
     let is_resp = is_responses_api(&config.api_style);
     let url = if is_claude {
-        format!("{}/v1/messages", config.endpoint.trim_end_matches('/'))
+        let base = config.endpoint.trim_end_matches('/');
+        if base.contains("/v1/") {
+            base.to_string()
+        } else {
+            format!("{base}/v1/messages")
+        }
     } else {
         build_endpoint(&config.endpoint, config.api_style.as_deref().unwrap_or("chat-completions"))
     };
@@ -440,94 +499,84 @@ pub async fn stream_chat(
         return Err(format!("API error {status}: {text}"));
     }
 
-    let mut stream = res.bytes_stream();
-    let mut buffer = String::new();
+    // Convert reqwest byte stream → tokio AsyncRead → BufReader → line iterator
+    let byte_stream = res.bytes_stream().map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+    let reader = StreamReader::new(byte_stream);
+    let mut lines = BufReader::new(reader).lines();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+        println!("[Rust Core] 收到原始行 -> {}", line);
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        // Skip empty lines and SSE comment/heartbeat lines (start with ':')
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
 
-            if !line.starts_with("data: ") {
-                continue;
+        // Extract data payload: handle both "data: {...}" and "data:{...}"
+        let data = match line.strip_prefix("data: ") {
+            Some(rest) => rest,
+            None => match line.strip_prefix("data:") {
+                Some(rest) => rest,
+                None => continue, // event:, id:, retry: — ignore
+            },
+        };
+
+        if is_claude {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                if json["type"] == "content_block_delta" {
+                    if let Some(text) = json["delta"]["text"].as_str() {
+                        println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", text);
+                        let _ = on_event.send(TokenPayload {
+                            token: text.to_string(),
+                            done: false,
+                        });
+                    }
+                }
             }
-            let data = &line[6..];
-
-            if is_claude {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                    if json["type"] == "content_block_delta" {
-                        if let Some(text) = json["delta"]["text"].as_str() {
-                            let _ = app.emit(
-                                "ai-token",
-                                TokenPayload {
-                                    token: text.to_string(),
-                                    done: false,
-                                },
-                            );
-                        }
+        } else if is_resp {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                let event_type = json["type"].as_str().unwrap_or("");
+                if event_type == "response.output_text.delta" {
+                    if let Some(text) = json["delta"].as_str() {
+                        println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", text);
+                        let _ = on_event.send(TokenPayload {
+                            token: text.to_string(),
+                            done: false,
+                        });
                     }
-                }
-            } else if is_resp {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                    let event_type = json["type"].as_str().unwrap_or("");
-                    if event_type == "response.output_text.delta" {
-                        if let Some(text) = json["delta"].as_str() {
-                            let _ = app.emit(
-                                "ai-token",
-                                TokenPayload {
-                                    token: text.to_string(),
-                                    done: false,
-                                },
-                            );
-                        }
-                    } else if event_type == "response.completed" {
-                        let _ = app.emit(
-                            "ai-token",
-                            TokenPayload {
-                                token: String::new(),
-                                done: true,
-                            },
-                        );
-                        return Ok(());
-                    }
-                }
-            } else {
-                if data == "[DONE]" {
-                    let _ = app.emit(
-                        "ai-token",
-                        TokenPayload {
-                            token: String::new(),
-                            done: true,
-                        },
-                    );
+                } else if event_type == "response.completed" {
+                    let _ = on_event.send(TokenPayload {
+                        token: String::new(),
+                        done: true,
+                    });
                     return Ok(());
                 }
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                    if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                        let _ = app.emit(
-                            "ai-token",
-                            TokenPayload {
-                                token: delta.to_string(),
-                                done: false,
-                            },
-                        );
-                    }
+            }
+        } else {
+            if data == "[DONE]" {
+                let _ = on_event.send(TokenPayload {
+                    token: String::new(),
+                    done: true,
+                });
+                return Ok(());
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                    println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", delta);
+                    let _ = on_event.send(TokenPayload {
+                        token: delta.to_string(),
+                        done: false,
+                    });
                 }
             }
         }
     }
 
     // Stream ended without [DONE] (Claude path)
-    let _ = app.emit(
-        "ai-token",
-        TokenPayload {
-            token: String::new(),
-            done: true,
-        },
-    );
+    let _ = on_event.send(TokenPayload {
+        token: String::new(),
+        done: true,
+    });
 
     Ok(())
 }

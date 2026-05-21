@@ -600,8 +600,11 @@ function ProviderEditorDialog({
   }, []);
 
   const handleSave = async () => {
-    await saveProvider(toInput());
-    onSave({ ...form, hasApiKey: apiKey.length > 0 || form.hasApiKey });
+    const input = toInput();
+    // Ensure form.id matches the ID sent to backend
+    if (!form.id) setForm((prev) => ({ ...prev, id: input.id }));
+    await saveProvider(input);
+    onSave({ ...form, id: input.id, hasApiKey: apiKey.length > 0 || form.hasApiKey });
   };
 
   const handleRemove = async () => {

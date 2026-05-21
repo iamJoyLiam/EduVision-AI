@@ -259,16 +259,16 @@ export function AIPanel({ context }: AIPanelProps) {
                       >
                         <div
                           className={[
-                            "max-w-[88%] text-xs leading-relaxed rounded-lg px-3 py-2",
+                            "max-w-[88%] min-w-0 text-xs leading-relaxed rounded-lg px-3 py-2 overflow-hidden",
                             isUser
                               ? "bg-foreground text-background"
                               : "bg-surface-elevated border border-border text-foreground",
                           ].join(" ")}
                         >
                           {isUser ? (
-                            <span className="whitespace-pre-wrap">{m.content}</span>
+                            <span className="whitespace-pre-wrap break-words">{m.content}</span>
                           ) : (
-                            <div className="prose prose-sm max-w-none prose-p:my-1 prose-pre:my-1 prose-headings:my-1 prose-code:text-[11px]">
+                            <div className="prose prose-sm max-w-none break-words prose-p:my-1 prose-pre:my-1 prose-pre:overflow-x-auto prose-headings:my-1 prose-code:text-[11px]">
                               <ReactMarkdown>{m.content || "…"}</ReactMarkdown>
                             </div>
                           )}

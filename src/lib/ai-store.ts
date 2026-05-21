@@ -147,9 +147,12 @@ export const useAIStore = create<AIState>()((set, get) => ({
         enabled: (settings.enabled as boolean) ?? true,
         showError: (settings.showError as boolean) ?? true,
         activeProviderId:
-          (settings.activeProviderId as string) ?? "builtin-0",
+          String(settings.activeProviderId ?? "builtin-0"),
         providers:
-          (settings.providers as AIProvider[]) ?? [],
+          ((settings.providers as AIProvider[]) ?? []).map((p) => ({
+            ...p,
+            id: String(p.id),
+          })),
         inlineSuggestions: (settings.inlineSuggestions as boolean) ?? true,
         debounceMs: (settings.debounceMs as number) ?? 500,
         contextWindowSize: (settings.contextWindowSize as number) ?? 4096,
@@ -197,8 +200,10 @@ export const useAIStore = create<AIState>()((set, get) => ({
     get().saveSettings();
   },
   addProvider: (p) => {
+    const id = (p as AIProvider).id || Date.now().toString();
     set((s) => ({
-      providers: [...s.providers, { ...p, id: Date.now().toString() }],
+      providers: [...s.providers, { ...p, id }],
+      activeProviderId: id,
     }));
     get().saveSettings();
   },

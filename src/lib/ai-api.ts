@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, Channel } from "@tauri-apps/api/core";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -21,8 +20,8 @@ export async function* streamChat(
   let resolveNext: (() => void) | null = null;
   let rejectFn: ((err: Error) => void) | null = null;
 
-  const unlisten = await listen<TokenPayload>("ai-token", (event) => {
-    const payload = event.payload;
+  const onEvent = new Channel<TokenPayload>();
+  onEvent.onmessage = (payload) => {
     if (payload.done) {
       done = true;
       resolveNext?.();
@@ -30,7 +29,7 @@ export async function* streamChat(
       tokens.push(payload.token);
       resolveNext?.();
     }
-  });
+  };
 
   // Handle abort
   signal?.addEventListener("abort", () => {
@@ -38,8 +37,8 @@ export async function* streamChat(
     rejectFn?.(new DOMException("Aborted", "AbortError"));
   });
 
-  // Start streaming (fire and forget — tokens arrive via events)
-  invoke("stream_chat", { providerId, messages }).catch((err) => {
+  // Fire the invoke — tokens arrive via channel
+  invoke("stream_chat", { providerId, messages, onEvent }).catch((err) => {
     done = true;
     rejectFn?.(new Error(String(err)));
   });
@@ -62,7 +61,7 @@ export async function* streamChat(
       yield tokens.shift()!;
     }
   } finally {
-    unlisten();
+    // Channel is cleaned up by Tauri when the invoke completes
   }
 }
 
