@@ -58,21 +58,54 @@ pub struct TestResult {
     pub error: String,
 }
 
-// ── API Key storage (AES-256-GCM encrypted) ──
+// ── API Key storage (HKDF-SHA256 + AES-256-GCM) ──
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit};
 use aes_gcm::aead::Aead;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use hkdf::Hkdf;
+use sha2::Sha256;
 
-fn derive_key(app: &AppHandle) -> [u8; 32] {
-    let dir = app.path().app_data_dir().expect("failed to get app data dir");
-    let mut key = [0u8; 32];
-    let password = format!("eduvision-ai-{}", dir.display());
-    let _ = pbkdf2::pbkdf2::<hmac::Hmac<sha2::Sha256>>(password.as_bytes(), b"eduvision-salt-v1", 100_000, &mut key);
-    key
+/// Read macOS hardware UUID via IOPlatformExpertDevice (no root required)
+#[cfg(target_os = "macos")]
+fn get_machine_uuid() -> Option<String> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("IOPlatformUUID") {
+            // Format:   "IOPlatformUUID" = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+            return line.split('=').nth(1)?.trim().trim_matches('"').to_string().into();
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_machine_uuid() -> Option<String> {
+    // Fallback for non-macOS: use hostname
+    hostname::get().ok().map(|h| h.to_string_lossy().to_string())
+}
+
+static CACHED_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+
+/// Derive AES-256 key via HKDF-SHA256 using hardware UUID as IKM.
+/// Runs ~1ms vs PBKDF2's ~300ms. Cached after first call.
+fn derive_key(_app: &AppHandle) -> [u8; 32] {
+    *CACHED_KEY.get_or_init(|| {
+        let uuid = get_machine_uuid().expect("failed to read machine UUID");
+        let ikm = uuid.as_bytes();
+        let hk = Hkdf::<Sha256>::new(Some(b"eduvision-ai-v1"), ikm);
+        let mut key = [0u8; 32];
+        hk.expand(b"aes-256-gcm-key", &mut key).expect("HKDF expand failed");
+        key
+    })
 }
 
 fn encrypt_value(app: &AppHandle, plaintext: &str) -> Result<String, String> {
@@ -281,7 +314,6 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
         build_endpoint(&provider.endpoint, provider.api_style.as_deref().unwrap_or("chat-completions"))
     };
     let api_key = resolve_api_key(&app, &provider.id, &provider.api_key);
-    println!("[test_connection] url={url} is_claude={is_claude} is_resp={is_resp} api_key_len={}", api_key.len());
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -306,7 +338,6 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
         };
     }
     let test_model = &provider.model_id;
-    println!("[test_connection] test_model={test_model} model_id_empty={}", provider.model_id.is_empty());
 
     let body = if is_resp {
         serde_json::json!({
@@ -338,7 +369,6 @@ pub async fn test_connection(app: AppHandle, provider: ProviderInput) -> TestRes
             } else {
                 let status = res.status().as_u16();
                 let text = res.text().await.unwrap_or_default();
-                println!("[test_connection] error response: HTTP {status} body={text}");
                 TestResult {
                     ok: false,
                     error: format!("HTTP {status} [{url}]: {}", &text[..text.len().min(300)]),
@@ -401,7 +431,6 @@ pub async fn fetch_models(app: AppHandle, provider: ProviderInput) -> Vec<String
 
     let client = reqwest::Client::new();
     for models_url in &candidate_urls {
-        println!("[fetch_models] trying {models_url}");
         if let Ok(res) = client
             .get(models_url)
             .headers(headers.clone())
@@ -420,17 +449,14 @@ pub async fn fetch_models(app: AppHandle, provider: ProviderInput) -> Vec<String
                             .collect();
                         models.sort();
                         if !models.is_empty() {
-                            println!("[fetch_models] got {} models from {models_url}", models.len());
                             return models;
                         }
                     }
                 }
             } else {
-                println!("[fetch_models] {models_url} -> HTTP {status}");
             }
         }
     }
-    println!("[fetch_models] all endpoints failed, returning empty");
 
     // Fallback only for known built-in providers (by name).
     // Custom/third-party proxies return empty — user enters model ID manually.
@@ -522,8 +548,6 @@ pub async fn stream_chat(
     } else {
         build_endpoint(&config.endpoint, config.api_style.as_deref().unwrap_or("chat-completions"))
     };
-    println!("[stream_chat] url={url} is_claude={is_claude} is_resp={is_resp}");
-
     let client = reqwest::Client::new();
 
     let mut headers = reqwest::header::HeaderMap::new();
@@ -626,8 +650,6 @@ pub async fn stream_chat(
     let mut lines = BufReader::new(reader).lines();
 
     while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-        println!("[Rust Core] 收到原始行 -> {}", line);
-
         // Skip empty lines and SSE comment/heartbeat lines (start with ':')
         if line.is_empty() || line.starts_with(':') {
             continue;
@@ -646,7 +668,6 @@ pub async fn stream_chat(
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                 if json["type"] == "content_block_delta" {
                     if let Some(text) = json["delta"]["text"].as_str() {
-                        println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", text);
                         let _ = on_event.send(TokenPayload {
                             token: text.to_string(),
                             done: false,
@@ -659,7 +680,6 @@ pub async fn stream_chat(
                 let event_type = json["type"].as_str().unwrap_or("");
                 if event_type == "response.output_text.delta" {
                     if let Some(text) = json["delta"].as_str() {
-                        println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", text);
                         let _ = on_event.send(TokenPayload {
                             token: text.to_string(),
                             done: false,
@@ -683,7 +703,6 @@ pub async fn stream_chat(
             }
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                    println!("[Rust Core] 成功向前端 Channel 发送 Token -> {:?}", delta);
                     let _ = on_event.send(TokenPayload {
                         token: delta.to_string(),
                         done: false,
