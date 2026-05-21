@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -35,6 +35,21 @@ export function SolvePanel() {
   const [stepsOpen, setStepsOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const skipAbortRef = useRef(false);
+
+  // Abort ongoing stream when user switches to a different history session
+  useEffect(() => {
+    if (skipAbortRef.current) {
+      skipAbortRef.current = false;
+      return;
+    }
+    if (isStreaming) {
+      abortRef.current?.abort();
+      setStreaming(false);
+      setStreamingContent("");
+    }
+    setFallbackContent(null);
+  }, [activeSessionId]);
 
   const isConfigured = providers.some((p) => p.hasApiKey);
 
@@ -52,6 +67,7 @@ export function SolvePanel() {
       createdAt: Date.now(),
       hasVisualization: false,
     };
+    skipAbortRef.current = true;
     addSession(newSession);
     setInput("");
     setStreaming(true);
