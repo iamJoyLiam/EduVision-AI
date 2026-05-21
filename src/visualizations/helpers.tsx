@@ -127,18 +127,40 @@ export function Axes({ svgWidth, svgHeight, xMin, xMax, yMin, yMax }: AxesProps)
   const origin = toSvgPixel(0, 0, xMin, xMax, yMin, yMax, svgWidth, svgHeight);
   const tickElements: React.JSX.Element[] = [];
 
+  // X axis ticks + labels
   for (let tick = Math.ceil(xMin); tick <= Math.floor(xMax); tick++) {
     if (tick === 0) continue;
     const px = ((tick - xMin) / (xMax - xMin)) * svgWidth;
     tickElements.push(
       <line key={`xt${tick}`} x1={px} y1={origin.y - 3} x2={px} y2={origin.y + 3} stroke="currentColor" />,
     );
+    const labelY = Math.min(origin.y + 14, svgHeight - 4);
+    tickElements.push(
+      <text key={`xl${tick}`} x={px} y={labelY} textAnchor="middle" fontSize={10} className="fill-current">
+        {tick}
+      </text>,
+    );
   }
+  // Y axis ticks + labels
   for (let tick = Math.ceil(yMin); tick <= Math.floor(yMax); tick++) {
     if (tick === 0) continue;
     const py = svgHeight - ((tick - yMin) / (yMax - yMin)) * svgHeight;
     tickElements.push(
       <line key={`yt${tick}`} x1={origin.x - 3} y1={py} x2={origin.x + 3} y2={py} stroke="currentColor" />,
+    );
+    const labelX = Math.max(origin.x - 6, 4);
+    tickElements.push(
+      <text key={`yl${tick}`} x={labelX} y={py + 3} textAnchor="end" fontSize={10} className="fill-current">
+        {tick}
+      </text>,
+    );
+  }
+  // Origin label
+  if (xMin < 0 && xMax > 0 && yMin < 0 && yMax > 0) {
+    tickElements.push(
+      <text key="origin" x={origin.x - 6} y={origin.y + 14} textAnchor="end" fontSize={10} className="fill-current">
+        0
+      </text>,
     );
   }
 

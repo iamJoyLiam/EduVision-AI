@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Send, Square, Loader2, AlertTriangle } from "lucide-react";
+import { Send, Square, Loader2, AlertTriangle, ChevronRight, ChevronDown } from "lucide-react";
 import { useSolveStore } from "@/lib/solve-store";
 import { useAIStore } from "@/lib/ai-store";
 import { streamChat } from "@/lib/ai-api";
@@ -28,6 +28,7 @@ export function SolvePanel() {
 
   const [input, setInput] = useState("");
   const [fallbackContent, setFallbackContent] = useState<string | null>(null);
+  const [stepsOpen, setStepsOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -193,22 +194,48 @@ export function SolvePanel() {
         )}
 
         {hasResult && (
-          <div className="flex flex-col lg:flex-row min-h-0">
-            {/* Steps */}
-            <div className="flex-1 p-6 min-w-0">
-              <SolveSteps steps={currentSteps} />
-            </div>
-
-            {/* Visualization */}
-            {currentVisualization && (
-              <div className="w-full lg:w-[420px] shrink-0 p-6 border-l border-border">
+          <div className="flex flex-1 min-h-0">
+            {/* Visualization — main area */}
+            <div className="flex-1 min-w-0 p-4 overflow-y-auto">
+              {currentVisualization ? (
                 <DynamicCanvas
                   visualization={currentVisualization}
                   variables={currentVariables}
                   onVariablesChange={setCurrentVariables}
                 />
-              </div>
-            )}
+              ) : (
+                <div className="h-full flex items-center justify-center text-muted-foreground text-sm">
+                  本题无可视化内容
+                </div>
+              )}
+            </div>
+
+            {/* Steps — collapsible right sidebar */}
+            <div
+              className={[
+                "shrink-0 border-l border-border bg-surface flex flex-col overflow-hidden transition-[width] duration-200 ease-out",
+                stepsOpen ? "w-[360px]" : "w-10",
+              ].join(" ")}
+            >
+              <button
+                onClick={() => setStepsOpen((v) => !v)}
+                className="shrink-0 h-10 px-2 flex items-center gap-1.5 text-xs text-muted-foreground hover:bg-surface-elevated transition-colors border-b border-border"
+              >
+                {stepsOpen ? (
+                  <ChevronDown className="w-3.5 h-3.5 rotate-90" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+                {stepsOpen && (
+                  <span className="font-semibold tracking-wide">分步解析</span>
+                )}
+              </button>
+              {stepsOpen && (
+                <div className="flex-1 overflow-y-auto p-4">
+                  <SolveSteps steps={currentSteps} />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
