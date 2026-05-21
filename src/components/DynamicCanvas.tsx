@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import type { VisualizationConfig } from "@/lib/solve-schema";
 import {
   Axes,
@@ -31,10 +31,6 @@ const RAW_COLORS: Record<string, string> = {
   "chart-5": "oklch(0.6 0.18 300)",
 };
 
-/**
- * Build a human-readable equation string with variable values substituted.
- * e.g. "a * x^2 + b * x + c" with a=2, b=-3, c=1 → "y = 2x² + -3x + 1"
- */
 function buildEquationLabel(
   expr: string,
   vars: Record<string, number>,
@@ -42,17 +38,15 @@ function buildEquationLabel(
   let eq = expr;
   for (const [name, val] of Object.entries(vars)) {
     const formatted = Number.isInteger(val) ? val.toString() : val.toFixed(2);
-    // Replace variable name with value, but not inside function names like "sin", "cos"
-    eq = eq.replace(new RegExp(`(?<![a-zA-Z])${name}(?![a-zA-Z])`, "g"), formatted);
+    eq = eq.replace(
+      new RegExp(`(?<![a-zA-Z])${name}(?![a-zA-Z])`, "g"),
+      formatted,
+    );
   }
-  // Clean up display
   eq = eq.replace(/\^/g, "^").replace(/\*/g, "");
   return `y = ${eq}`;
 }
 
-/**
- * Find x-intercepts by scanning for sign changes in y values.
- */
 function findXIntercepts(
   expr: string,
   vars: Record<string, number>,
@@ -68,15 +62,36 @@ function findXIntercepts(
     const x = xMin + i * dx;
     const y = localMathSandbox.evaluate(expr, { ...vars, x });
     if (prevY * y < 0) {
-      // Sign change — linear interpolation for better accuracy
-      const x0 = x - dx;
-      const x1 = x;
       const frac = Math.abs(prevY) / (Math.abs(prevY) + Math.abs(y));
-      intercepts.push(x0 + frac * (x1 - x0));
+      intercepts.push(x - dx + frac * dx);
     }
     prevY = y;
   }
   return intercepts;
+}
+
+/** Measure a container's actual pixel size */
+function useContainerSize(ref: React.RefObject<HTMLDivElement | null>) {
+  const [size, setSize] = useState({ width: 720, height: 480 });
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
+      }
+    };
+
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+
+  return size;
 }
 
 export function DynamicCanvas({
@@ -86,9 +101,8 @@ export function DynamicCanvas({
 }: DynamicCanvasProps) {
   const throttledVars = useRafValue(variables);
   const throttledViz = useRafValue(visualization);
-
-  const svgWidth = 720;
-  const svgHeight = 480;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const { width: svgWidth, height: svgHeight } = useContainerSize(containerRef);
 
   const { xRange, yRange, expressions } = throttledViz;
   const [xMin, xMax] = xRange;
@@ -109,76 +123,66 @@ export function DynamicCanvas({
       );
       return { ...exprConfig, pathD };
     });
-  }, [expressions, throttledVars, xMin, xMax, yMin, yMax]);
+  }, [expressions, throttledVars, xMin, xMax, yMin, yMax, svgWidth, svgHeight]);
 
-  // Compute key points for each expression
+  // Compute key points
   const keyPoints = useMemo(() => {
     return expressions.map((exprConfig) => {
       const points: Array<{
         x: number;
         y: number;
         label: string;
-        type: "intercept" | "vertex";
       }> = [];
 
-      // Y-intercept (x=0)
       if (xMin <= 0 && xMax >= 0) {
         const y0 = localMathSandbox.evaluate(exprConfig.expr, {
           ...throttledVars,
           x: 0,
         });
         if (isFinite(y0) && y0 >= yMin && y0 <= yMax) {
-          points.push({ x: 0, y: y0, label: `(0, ${y0.toFixed(1)})`, type: "intercept" });
+          points.push({ x: 0, y: y0, label: `(0, ${y0.toFixed(1)})` });
         }
       }
 
-      // X-intercepts
-      const xIntercepts = findXIntercepts(
+      for (const xi of findXIntercepts(
         exprConfig.expr,
         throttledVars,
         xMin,
         xMax,
-      );
-      for (const xi of xIntercepts) {
-        points.push({
-          x: xi,
-          y: 0,
-          label: `(${xi.toFixed(1)}, 0)`,
-          type: "intercept",
-        });
+      )) {
+        points.push({ x: xi, y: 0, label: `(${xi.toFixed(1)}, 0)` });
       }
 
       return points;
     });
   }, [expressions, throttledVars, xMin, xMax, yMin, yMax]);
 
-  // Build slider defs
-  const sliderDefs = useMemo(() => {
-    return visualization.variables.map((v) => ({
-      key: v.name,
-      label: v.name,
-      min: v.min,
-      max: v.max,
-      default: v.default,
-      step: v.step,
-    }));
-  }, [visualization.variables]);
+  const sliderDefs = useMemo(
+    () =>
+      visualization.variables.map((v) => ({
+        key: v.name,
+        label: v.name,
+        min: v.min,
+        max: v.max,
+        default: v.default,
+        step: v.step,
+      })),
+    [visualization.variables],
+  );
 
-  // Equation labels
-  const equationLabels = useMemo(() => {
-    return expressions.map((exprConfig) =>
-      buildEquationLabel(exprConfig.expr, throttledVars),
-    );
-  }, [expressions, throttledVars]);
+  const equationLabels = useMemo(
+    () => expressions.map((e) => buildEquationLabel(e.expr, throttledVars)),
+    [expressions, throttledVars],
+  );
 
   return (
     <div className="flex flex-col h-full">
-      {/* SVG Canvas — fills available space */}
-      <div className="flex-1 min-h-0 bg-card border border-border rounded-xl overflow-hidden relative">
+      {/* SVG Canvas — ref for measuring, fills container completely */}
+      <div ref={containerRef} className="flex-1 min-h-0 bg-card border border-border rounded-xl overflow-hidden relative">
         <svg
+          width={svgWidth}
+          height={svgHeight}
           viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-          className="w-full h-full"
-          preserveAspectRatio="xMidYMid meet"
         >
           <Axes
             svgWidth={svgWidth}
@@ -189,7 +193,6 @@ export function DynamicCanvas({
             yMax={yMax}
           />
 
-          {/* Curves */}
           {paths.map((p, i) => (
             <path
               key={i}
@@ -202,9 +205,9 @@ export function DynamicCanvas({
             />
           ))}
 
-          {/* Key points (intercepts) */}
-          {keyPoints.map((pts, curveIdx) =>
-            pts.map((pt, ptIdx) => {
+          {/* Key points */}
+          {keyPoints.map((pts, ci) =>
+            pts.map((pt, pi) => {
               const px = toSvgPixel(
                 pt.x,
                 pt.y,
@@ -215,9 +218,10 @@ export function DynamicCanvas({
                 svgWidth,
                 svgHeight,
               );
-              const color = RAW_COLORS[expressions[curveIdx].color] ?? "oklch(0.62 0.18 250)";
+              const color =
+                RAW_COLORS[expressions[ci].color] ?? "oklch(0.62 0.18 250)";
               return (
-                <g key={`kp-${curveIdx}-${ptIdx}`}>
+                <g key={`kp-${ci}-${pi}`}>
                   <circle
                     cx={px.x}
                     cy={px.y}
@@ -240,7 +244,7 @@ export function DynamicCanvas({
             }),
           )}
 
-          {/* Equation labels — top-left */}
+          {/* Equation labels */}
           <g transform="translate(16, 20)">
             {equationLabels.map((label, i) => (
               <text
@@ -250,14 +254,16 @@ export function DynamicCanvas({
                 fontSize={13}
                 fontWeight={600}
                 fontFamily="monospace"
-                fill={RAW_COLORS[expressions[i].color] ?? "oklch(0.62 0.18 250)"}
+                fill={
+                  RAW_COLORS[expressions[i].color] ?? "oklch(0.62 0.18 250)"
+                }
               >
                 {label}
               </text>
             ))}
           </g>
 
-          {/* Legend — top-right */}
+          {/* Legend */}
           <g transform={`translate(${svgWidth - 120}, 16)`}>
             {expressions.map((expr, i) => (
               <g key={i} transform={`translate(0, ${i * 18})`}>
@@ -283,7 +289,7 @@ export function DynamicCanvas({
         </svg>
       </div>
 
-      {/* Variable Sliders — below canvas */}
+      {/* Variable Sliders */}
       {sliderDefs.length > 0 && (
         <div className="shrink-0 mt-3 bg-card border border-border rounded-xl px-4 py-3">
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
