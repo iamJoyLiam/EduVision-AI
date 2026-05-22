@@ -55,6 +55,7 @@ export function useRafValue<T>(value: T): T {
 /**
  * Build an SVG path string for y = f(x), skipping out-of-bounds points.
  * Pure function — no side effects, no interpolation.
+ * Adaptive step: ~2 samples per pixel for smooth curves.
  */
 export function buildCurvePath(
   curveFn: (x: number) => number | null,
@@ -64,15 +65,16 @@ export function buildCurvePath(
   yMax: number,
   svgWidth: number,
   svgHeight: number,
-  step: number = 0.1,
 ): string {
   const segs: string[] = [];
   const yLo = yMin - 5;
   const yHi = yMax + 5;
-  const steps = Math.round((xMax - xMin) / step);
+  // Aim for ~2 samples per pixel for smooth curves
+  const numSamples = Math.max(200, svgWidth * 2);
+  const step = (xMax - xMin) / numSamples;
   let inBounds = false;
 
-  for (let i = 0; i <= steps; i++) {
+  for (let i = 0; i <= numSamples; i++) {
     const x = xMin + i * step;
     const y = curveFn(x);
 
