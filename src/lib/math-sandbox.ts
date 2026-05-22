@@ -26,6 +26,7 @@ function evaluate(
 ): number {
   try {
     const sanitized = expr
+      .replace(/Math\.\w+/g, (m) => m.slice(5)) // Math.exp → exp, Math.sin → sin
       .replace(/\\pi/g, "PI")
       .replace(/\\e/g, "E")
       .replace(/π/g, "PI")

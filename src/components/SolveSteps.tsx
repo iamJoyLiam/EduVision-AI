@@ -38,9 +38,7 @@ export function SolveSteps({ steps }: SolveStepsProps) {
               onClick={() => toggle(i)}
               className={[
                 "w-full flex items-center gap-2 px-3 py-2 text-left transition-colors",
-                isOpen
-                  ? "bg-surface-elevated"
-                  : "hover:bg-surface-elevated/60",
+                isOpen ? "bg-surface-elevated" : "hover:bg-surface-elevated/60",
               ].join(" ")}
             >
               <span
@@ -64,7 +62,7 @@ export function SolveSteps({ steps }: SolveStepsProps) {
             <div
               className={[
                 "overflow-hidden transition-[max-height] duration-200 ease-out",
-                isOpen ? "max-h-[600px]" : "max-h-0",
+                isOpen ? "max-h-150" : "max-h-0",
               ].join(" ")}
             >
               <div className="px-3 pb-3 border-t border-border pt-2">

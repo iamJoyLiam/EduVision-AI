@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Search, Plus, PanelLeft, Sparkles, GripVertical, X, BrainCircuit } from "lucide-react";
+import {
+  Search,
+  Plus,
+  PanelLeft,
+  Sparkles,
+  GripVertical,
+  X,
+  BrainCircuit,
+} from "lucide-react";
 import {
   SUBJECT_LABELS,
   STAGE_LABELS,
@@ -33,7 +41,8 @@ export function TitleBar({
   topicParams,
   onParamChange,
 }: TitleBarProps) {
-  const { leftOpen, rightOpen, mode, setMode, toggleLeft, toggleRight } = useUIStore();
+  const { leftOpen, rightOpen, mode, setMode, toggleLeft, toggleRight } =
+    useUIStore();
   const os = usePlatform();
 
   // 参数弹出面板状态
@@ -111,14 +120,12 @@ export function TitleBar({
 
   // macOS 交通灯占 ~78px，Windows 窗口按钮占 ~140px
   const toolbarStyle: React.CSSProperties =
-    os === "macos"
-      ? { paddingLeft: 78 }
-      : { paddingRight: 140 };
+    os === "macos" ? { paddingLeft: 78 } : { paddingRight: 140 };
 
   return (
     <>
       <div
-        className="h-[34px] flex items-center pr-3 gap-2 bg-titlebar border-b border-border select-none shrink-0"
+        className="h-8.5 flex items-center pr-3 gap-2 bg-titlebar border-b border-border select-none shrink-0"
         style={toolbarStyle}
       >
         {/* 侧边栏开关 */}
@@ -148,7 +155,9 @@ export function TitleBar({
               return (
                 <button
                   key={stageOption}
-                  onClick={isAvailable ? () => onStageChange(stageOption) : undefined}
+                  onClick={
+                    isAvailable ? () => onStageChange(stageOption) : undefined
+                  }
                   disabled={!isAvailable}
                   className={[
                     "px-3 py-1 text-xs rounded-full transition-colors font-medium",
@@ -173,7 +182,11 @@ export function TitleBar({
               return (
                 <button
                   key={subjectOption}
-                  onClick={isAvailable ? () => onSubjectChange(subjectOption) : undefined}
+                  onClick={
+                    isAvailable
+                      ? () => onSubjectChange(subjectOption)
+                      : undefined
+                  }
                   disabled={!isAvailable}
                   className={[
                     "px-3 py-1 text-xs rounded-full transition-colors font-medium",

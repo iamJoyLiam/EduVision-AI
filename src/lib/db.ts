@@ -40,9 +40,17 @@ export async function init(): Promise<void> {
         title TEXT NOT NULL,
         original_prompt TEXT NOT NULL,
         response_json TEXT NOT NULL DEFAULT 'null',
+        raw_content TEXT,
         created_at INTEGER NOT NULL
       )
     `);
+
+    // Migration: add raw_content column if missing
+    try {
+      await db.execute("ALTER TABLE solve_sessions ADD COLUMN raw_content TEXT");
+    } catch {
+      // column already exists, ignore
+    }
 
     await migrateFromLocalStorage();
   } catch (err) {
@@ -279,13 +287,14 @@ export interface SolveSessionRow {
   title: string;
   original_prompt: string;
   response_json: string;
+  raw_content: string | null;
   created_at: number;
 }
 
 const solveDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingSolveSessions = new Map<
   string,
-  { title: string; originalPrompt: string; responseJson: string; createdAt: number }
+  { title: string; originalPrompt: string; responseJson: string; rawContent?: string; createdAt: number }
 >();
 const SOLVE_DEBOUNCE_MS = 1000;
 
@@ -294,7 +303,7 @@ export async function loadSolveSessions(): Promise<SolveSessionRow[]> {
 
   try {
     return await db.select<SolveSessionRow[]>(
-      "SELECT id, title, original_prompt, response_json, created_at FROM solve_sessions ORDER BY created_at DESC"
+      "SELECT id, title, original_prompt, response_json, raw_content, created_at FROM solve_sessions ORDER BY created_at DESC"
     );
   } catch (err) {
     console.error("[db] Failed to load solve sessions:", err);
@@ -308,8 +317,9 @@ export function saveSolveSession(
   originalPrompt: string,
   responseJson: string,
   createdAt: number,
+  rawContent?: string,
 ): void {
-  pendingSolveSessions.set(id, { title, originalPrompt, responseJson, createdAt });
+  pendingSolveSessions.set(id, { title, originalPrompt, responseJson, rawContent, createdAt });
 
   const existing = solveDebounceTimers.get(id);
   if (existing) clearTimeout(existing);
@@ -324,8 +334,8 @@ export function saveSolveSession(
 
       try {
         await db.execute(
-          "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, created_at) VALUES ($1, $2, $3, $4, $5)",
-          [id, data.title, data.originalPrompt, data.responseJson, data.createdAt]
+          "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, raw_content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+          [id, data.title, data.originalPrompt, data.responseJson, data.rawContent ?? null, data.createdAt]
         );
       } catch (err) {
         console.error("[db] Failed to save solve session:", err);
@@ -360,8 +370,8 @@ export async function flushSolveSessions(): Promise<void> {
 
     try {
       await db.execute(
-        "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, created_at) VALUES ($1, $2, $3, $4, $5)",
-        [id, data.title, data.originalPrompt, data.responseJson, data.createdAt]
+        "INSERT OR REPLACE INTO solve_sessions (id, title, original_prompt, response_json, raw_content, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        [id, data.title, data.originalPrompt, data.responseJson, data.rawContent ?? null, data.createdAt]
       );
     } catch (err) {
       console.error("[db] Failed to flush solve session:", err);
