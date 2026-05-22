@@ -60,6 +60,20 @@ const SOLVE_SYSTEM_PROMPT = `# Role
 - 提取题目中的独立变量（如参数 a, k）。
 - 几何题必须以左下角或关键点为原点建立隐式直角坐标系，使用 polygon 或 segment 描绘图形。
 
+### 圆锥曲线绘制规则（CRITICAL）
+椭圆、圆、双曲线等隐式方程不能直接用 curve 绘制！必须拆分为上下两个函数分支：
+- **椭圆** x²/a² + y²/b² = 1 → 两条 curve：
+  - expression: "b * sqrt(1 - x^2 / a^2)" （上半部分）
+  - expression: "-b * sqrt(1 - x^2 / a^2)" （下半部分）
+- **圆** x² + y² = r² → 两条 curve：
+  - expression: "sqrt(r^2 - x^2)"
+  - expression: "-sqrt(r^2 - x^2)"
+- **双曲线** x²/a² - y²/b² = 1 → 两条 curve：
+  - expression: "b * sqrt(x^2 / a^2 - 1)"
+  - expression: "-b * sqrt(x^2 / a^2 - 1)"
+
+示例：椭圆 x²/4 + y² = 1 的 elements 应为两个 curve：上半 sqrt(1 - x²/4) 和下半 -sqrt(1 - x²/4)
+
 ## PHYSICS (物理)
 - 运动学 (PHYSICS_KINEMATICS)：将时间 \`t\` 设为 controls 的滑块参数。轨迹和位置表达式必须是关于 \`t\` 的函数。
 - 力学 (PHYSICS_MECHANICS)：使用 \`vector\` 图元表示力，\`expression\` 格式为 \`[起点x, 起点y, 向量dx, 向量dy]\`。

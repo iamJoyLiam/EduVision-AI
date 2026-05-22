@@ -18,7 +18,8 @@ const parser = new Parser({
 
 /**
  * Safely evaluate a math expression with variable substitution.
- * Returns 0 on any error (division by zero, NaN, Infinity, parse error).
+ * Returns NaN on any error (division by zero, NaN, Infinity, parse error).
+ * NaN signals to callers that the point should be skipped.
  */
 function evaluate(
   expr: string,
@@ -36,11 +37,11 @@ function evaluate(
     const result = compiled.evaluate(variables);
 
     if (typeof result !== "number" || isNaN(result) || !isFinite(result)) {
-      return 0;
+      return NaN;
     }
     return result;
   } catch {
-    return 0;
+    return NaN;
   }
 }
 
