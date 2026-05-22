@@ -10,7 +10,6 @@ import { DynamicCanvas } from "./DynamicCanvas";
 
 export function SolvePanel() {
   const {
-    sessions,
     activeSessionId,
     addSession,
     isStreaming,
@@ -25,8 +24,6 @@ export function SolvePanel() {
     stopStream,
     hydrateFromSnapshot,
   } = useSolveStore();
-
-  const activeSession = sessions.find((s) => s.id === activeSessionId);
 
   const { providers, activeProviderId } = useAIStore();
 

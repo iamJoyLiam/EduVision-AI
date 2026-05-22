@@ -346,9 +346,11 @@ export const useSolveStore = create<SolveState>((set, get) => ({
 // ── JSON parsing (moved from SolvePanel) ──
 
 function extractAndParseJson(content: string): SolveResponse | null {
+  // 1. Try direct parse
   const directTry = tryParse(content);
   if (directTry) return directTry;
 
+  // 2. Try extracting from markdown code blocks
   const codeBlocks = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/g);
   if (codeBlocks) {
     for (const block of codeBlocks) {
@@ -358,19 +360,28 @@ function extractAndParseJson(content: string): SolveResponse | null {
     }
   }
 
+  // 3. Try extracting JSON by braces
   const jsonFromBraces = extractJsonByBraces(content);
   if (jsonFromBraces) {
     const braceTry = tryParse(jsonFromBraces);
     if (braceTry) return braceTry;
+
+    // 3b. Try fixing backslashes on the extracted JSON
+    const fixedBraces = fixJsonBackslashes(jsonFromBraces);
+    if (fixedBraces && fixedBraces !== jsonFromBraces) {
+      const fixedBraceTry = tryParse(fixedBraces);
+      if (fixedBraceTry) return fixedBraceTry;
+    }
   }
 
+  // 4. Try fixing backslashes on full content
   const fixed = fixJsonBackslashes(content);
   if (fixed) {
     const fixedTry = tryParse(fixed);
     if (fixedTry) return fixedTry;
   }
 
-  console.warn("[SolveStore] Failed to parse AI response as JSON");
+  console.warn("[SolveStore] Failed to parse AI response as JSON. Content preview:", content.slice(0, 300));
   return null;
 }
 
@@ -411,9 +422,13 @@ function tryParse(str: string): SolveResponse | null {
     const data = JSON.parse(str.trim());
     const result = SolveResponseSchema.safeParse(data);
     if (result.success) return result.data;
-    console.warn("[SolveStore] Zod validation failed:", result.error?.issues);
+    console.warn("[SolveStore] Zod validation failed:");
+    for (const issue of result.error?.issues ?? []) {
+      console.warn(`  - Path: ${issue.path.join('.')}, Code: ${issue.code}, Message: ${issue.message}`);
+    }
+    console.warn("[SolveStore] Received data:", JSON.stringify(data, null, 2)?.slice(0, 500));
   } catch (err) {
-    console.warn("[SolveStore] JSON.parse failed:", (err as Error).message?.slice(0, 100));
+    console.warn("[SolveStore] JSON.parse failed:", (err as Error).message?.slice(0, 200));
   }
   return null;
 }
