@@ -4,10 +4,9 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { ChevronRight } from "lucide-react";
-import type { SolveResponse } from "@/lib/solve-schema";
 
 interface SolveStepsProps {
-  steps: SolveResponse["steps"];
+  steps: string[];
 }
 
 export function SolveSteps({ steps }: SolveStepsProps) {
@@ -29,6 +28,12 @@ export function SolveSteps({ steps }: SolveStepsProps) {
     <div className="space-y-1.5">
       {steps.map((step, i) => {
         const isOpen = expanded.has(i);
+        // Extract title from first line or use step number
+        const lines = step.split("\n");
+        const firstLine = lines[0].replace(/^\*\*/, "").replace(/\*\*$/, "").trim();
+        const title = firstLine || `步骤 ${i + 1}`;
+        const content = lines.length > 1 ? lines.slice(1).join("\n").trim() : step;
+
         return (
           <div
             key={i}
@@ -50,7 +55,7 @@ export function SolveSteps({ steps }: SolveStepsProps) {
                 {i + 1}
               </span>
               <span className="flex-1 text-xs font-medium truncate">
-                {step.title}
+                {title}
               </span>
               <ChevronRight
                 className={[
@@ -71,14 +76,9 @@ export function SolveSteps({ steps }: SolveStepsProps) {
                     remarkPlugins={[remarkMath]}
                     rehypePlugins={[rehypeKatex]}
                   >
-                    {step.explanation}
+                    {content}
                   </ReactMarkdown>
                 </div>
-                {step.formula && (
-                  <div className="mt-2 inline-block bg-pink/5 border border-pink/20 rounded-md px-2 py-1 font-mono text-[11px] text-pink">
-                    {step.formula}
-                  </div>
-                )}
               </div>
             </div>
           </div>

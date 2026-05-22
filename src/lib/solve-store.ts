@@ -25,8 +25,8 @@ interface SolveState {
   abortController: AbortController | null;
 
   // Derived from active session
-  currentSteps: SolveResponse["steps"];
-  currentVisualization: SolveResponse["visualization"];
+  currentSteps: string[];
+  currentVisualization: SolveResponse["visualization_config"];
   currentVariables: Record<string, number>;
   fallbackContent: string | null;
 
@@ -44,44 +44,34 @@ interface SolveState {
   loadFromDb: () => Promise<void>;
 }
 
-const SOLVE_SYSTEM_PROMPT = `你是一个专业的数学、物理、化学解题引擎。严格按以下流程处理学生的题目：
+const SOLVE_SYSTEM_PROMPT = `# Role
+你是顶尖的 K-12（小初高）数理化教育解析中枢。任务是将非结构化的数学、物理、化学题目，转化为严谨的分步解析与可驱动前端图表的结构化 JSON。
 
-## 工作流程
-1. **诊断**：判断题目是否包含函数图像、几何图形、坐标轨迹、不等式区域等可可视化元素
-2. **拆解**：提取所有独立变量（参数 a, k, b 等）
-3. **降级**：将 LaTeX 公式转换为程序可求值的算术表达式
-4. **输出**：仅返回下方 JSON，不要输出任何其他文本、解释或 Markdown 标记
+# Schema Migration Mandate (STRICT DEPRECATION)
+你必须严格执行新版数据结构迁移。严禁输出任何旧版 Schema 字段。以下为新旧字段绝对禁令对照表：
+- 严禁使用旧字段 \`steps\` -> 必须迁移为顶层的 \`analysis_steps\` 字符串数组。
+- 严禁使用旧字段 \`visualization.type\` -> 必须迁移为顶层的 \`category\`。
+- 严禁使用旧字段 \`visualization.expressions\` -> 必须迁移为 \`visualization_config.elements\`。
+- 严禁使用旧字段 \`visualization.variables\` -> 必须迁移为 \`visualization_config.controls\`。
+- 严禁使用旧字段 \`xRange\`/\`yRange\` -> 必须迁移为 \`visualization_config.viewport\`。
 
-## 输出格式（严格遵守，仅返回此 JSON）
+# Subject Specific Rules
+## MATH (数学)
+- 提取题目中的独立变量（如参数 a, k）。
+- 几何题必须以左下角或关键点为原点建立隐式直角坐标系，使用 polygon 或 segment 描绘图形。
 
-{
-  "steps": [
-    {
-      "title": "步骤标题",
-      "explanation": "详细讲解，支持Markdown和LaTeX（行内$...$，行间$$...$$）",
-      "formula": "本步核心公式（可选）"
-    }
-  ],
-  "visualization": null
-}
+## PHYSICS (物理)
+- 运动学 (PHYSICS_KINEMATICS)：将时间 \`t\` 设为 controls 的滑块参数。轨迹和位置表达式必须是关于 \`t\` 的函数。
+- 力学 (PHYSICS_MECHANICS)：使用 \`vector\` 图元表示力，\`expression\` 格式为 \`[起点x, 起点y, 向量dx, 向量dy]\`。
 
-当 visualization 不为 null 时格式：
-{
-  "steps": [...],
-  "visualization": {
-    "type": "function",
-    "expressions": [
-      { "expr": "a * x^2 + b * x + c", "label": "f(x)", "color": "chart-1" }
-    ],
-    "variables": [
-      { "name": "a", "min": -5, "max": 5, "default": 1, "step": 0.1 }
-    ],
-    "xRange": [-10, 10],
-    "yRange": [-10, 10]
-  }
-}
+## CHEMISTRY (化学)
+- 动力学/平衡 (CHEMISTRY_KINETICS)：将时间或压强/温度设为 controls。使用 \`curve\` 描绘浓度/反应速率变化。
 
-## 表达式降级规则（关键）
+# Hard Constraints (CRITICAL)
+1. 严禁输出 Markdown 代码块标签（如 \`\`\`json），直接返回标准的 JSON 字符串。
+2. 转义限制：在 \`analysis_steps\` 中输出任何 LaTeX 公式时，必须使用【双反斜杠】转义！例如必须输出 \`\\\\frac{a}{2}\`，严禁输出 \`\\frac{a}{2}\` 或 \`\\frac{a}{2}\`。
+
+# Expression Rules (关键)
 - 乘法必须写 *：2*x（不是 2x）
 - 幂运算用 ^：x^2
 - 指数函数：exp(x)（不是 Math.exp(x)）
@@ -90,16 +80,32 @@ const SOLVE_SYSTEM_PROMPT = `你是一个专业的数学、物理、化学解题
 - 常量：PI, E
 - 禁止使用 JavaScript Math 对象
 
-## 可视化规则
-- 仅当题目涉及函数/几何/坐标/不等式时才生成 visualization
-- 纯文字推导、概率计算、排列组合 → visualization 设为 null
-- viewport（xRange/yRange）必须根据题目合理推算，确保曲线在画布内可见
-- 如果题目有可调参数，在 variables 中声明；无参数则 variables 为空数组
-- color 仅用 chart-1 到 chart-5
+# Target JSON Schema Definition
+{
+  "is_visualizable": boolean,
+  "subject": "MATH" | "PHYSICS" | "CHEMISTRY",
+  "category": "MATH_FUNCTION" | "MATH_GEOMETRY" | "PHYSICS_KINEMATICS" | "PHYSICS_MECHANICS" | "CHEMISTRY_KINETICS" | "NONE",
+  "analysis_steps": [
+    "**步骤一：受力分析** \\\\n 根据牛顿第二定律 $F = ma$..."
+  ],
+  "visualization_config": {
+    "viewport": { "x_min": -10, "x_max": 10, "y_min": -10, "y_max": 10 },
+    "controls": [
+      { "symbol": "t", "label": "时间 t", "type": "slider", "min": 0, "max": 10, "step": 0.1, "default": 0 }
+    ],
+    "elements": [
+      {
+        "id": "obj_velocity",
+        "type": "vector" | "curve" | "point" | "polygon" | "segment",
+        "expression": "string",
+        "color_intent": "primary" | "danger" | "success" | "warning",
+        "label_text": "速度 v"
+      }
+    ]
+  }
+}
 
-## steps 规则
-- 至少 1 个步骤
-- explanation 中的数学公式用 LaTeX：行内 $...$，行间 $$...$$`;
+若 is_visualizable 为 false，visualization_config 字段必须输出 null。`;
 
 export const useSolveStore = create<SolveState>((set, get) => ({
   sessions: [],
@@ -187,16 +193,16 @@ export const useSolveStore = create<SolveState>((set, get) => ({
       return;
     }
 
-    const viz = session.response.visualization;
+    const viz = session.response.visualization_config;
     const vars: Record<string, number> = {};
-    if (viz?.variables) {
-      for (const v of viz.variables) {
-        vars[v.name] = v.default;
+    if (viz?.controls) {
+      for (const c of viz.controls) {
+        vars[c.symbol] = c.default;
       }
     }
 
     set({
-      currentSteps: session.response.steps,
+      currentSteps: session.response.analysis_steps,
       currentVisualization: viz,
       currentVariables: vars,
       fallbackContent: null,
@@ -250,18 +256,18 @@ export const useSolveStore = create<SolveState>((set, get) => ({
         if (parsed) {
           get().updateSession(sessionId, {
             response: parsed,
-            hasVisualization: parsed.visualization !== null,
+            hasVisualization: parsed.is_visualizable && parsed.visualization_config !== null,
             rawContent: undefined,
           });
           // If this is still the active session, hydrate immediately
           if (get().activeSessionId === sessionId) {
-            const viz = parsed.visualization;
+            const viz = parsed.visualization_config;
             const vars: Record<string, number> = {};
-            if (viz?.variables) {
-              for (const v of viz.variables) vars[v.name] = v.default;
+            if (viz?.controls) {
+              for (const c of viz.controls) vars[c.symbol] = c.default;
             }
             set({
-              currentSteps: parsed.steps,
+              currentSteps: parsed.analysis_steps,
               currentVisualization: viz,
               currentVariables: vars,
               fallbackContent: null,
@@ -327,7 +333,7 @@ export const useSolveStore = create<SolveState>((set, get) => ({
       hasVisualization: (() => {
         try {
           const parsed = JSON.parse(r.response_json);
-          return parsed?.visualization != null;
+          return parsed?.is_visualizable && parsed?.visualization_config != null;
         } catch {
           return false;
         }
@@ -365,20 +371,6 @@ function extractAndParseJson(content: string): SolveResponse | null {
   if (jsonFromBraces) {
     const braceTry = tryParse(jsonFromBraces);
     if (braceTry) return braceTry;
-
-    // 3b. Try fixing backslashes on the extracted JSON
-    const fixedBraces = fixJsonBackslashes(jsonFromBraces);
-    if (fixedBraces && fixedBraces !== jsonFromBraces) {
-      const fixedBraceTry = tryParse(fixedBraces);
-      if (fixedBraceTry) return fixedBraceTry;
-    }
-  }
-
-  // 4. Try fixing backslashes on full content
-  const fixed = fixJsonBackslashes(content);
-  if (fixed) {
-    const fixedTry = tryParse(fixed);
-    if (fixedTry) return fixedTry;
   }
 
   console.warn("[SolveStore] Failed to parse AI response as JSON. Content preview:", content.slice(0, 300));
@@ -408,18 +400,11 @@ function extractJsonByBraces(text: string): string | null {
   return null;
 }
 
-function fixJsonBackslashes(content: string): string | null {
-  const start = content.indexOf("{");
-  const end = content.lastIndexOf("}");
-  if (start === -1 || end <= start) return null;
-  let jsonStr = content.slice(start, end + 1);
-  jsonStr = jsonStr.replace(/\\(?![\\"\/bfnrtu])/g, "\\\\");
-  return jsonStr;
-}
-
 function tryParse(str: string): SolveResponse | null {
   try {
-    const data = JSON.parse(str.trim());
+    // Fix single backslashes from AI (e.g. \frac -> \\frac)
+    const fixed = fixLatexBackslashes(str.trim());
+    const data = JSON.parse(fixed);
     const result = SolveResponseSchema.safeParse(data);
     if (result.success) return result.data;
     console.warn("[SolveStore] Zod validation failed:");
@@ -433,10 +418,67 @@ function tryParse(str: string): SolveResponse | null {
   return null;
 }
 
+/**
+ * Fix LaTeX backslashes that AI outputs as single backslash.
+ * In JSON, \f, \s, \l etc. are invalid escape sequences.
+ * This converts them to valid double backslashes.
+ */
+function fixLatexBackslashes(jsonStr: string): string {
+  // Strategy: walk through the string, track JSON string boundaries,
+  // and fix invalid escape sequences inside strings.
+  let result = "";
+  let inString = false;
+  let i = 0;
+
+  while (i < jsonStr.length) {
+    const ch = jsonStr[i];
+
+    if (!inString) {
+      if (ch === '"') {
+        inString = true;
+        result += ch;
+      } else {
+        result += ch;
+      }
+      i++;
+      continue;
+    }
+
+    // Inside a string
+    if (ch === "\\") {
+      const next = jsonStr[i + 1];
+      if (next === undefined) {
+        result += "\\\\";
+        i++;
+        continue;
+      }
+
+      // Valid JSON escape sequences: " \ / b f n r t u
+      if ('"\\/bfnrtu'.includes(next)) {
+        result += ch + next;
+        i += 2;
+      } else {
+        // Invalid escape (like \frac, \sqrt, \ln) - double the backslash
+        result += "\\\\" + next;
+        i += 2;
+      }
+    } else if (ch === '"') {
+      inString = false;
+      result += ch;
+      i++;
+    } else {
+      result += ch;
+      i++;
+    }
+  }
+
+  return result;
+}
+
 function safeParseJson(json: string): SolveResponse | null {
   try {
     const data = JSON.parse(json);
-    if (data && typeof data === "object" && Array.isArray(data.steps)) {
+    if (data && typeof data === "object" && Array.isArray(data.analysis_steps)) {
       return data as SolveResponse;
     }
   } catch {
