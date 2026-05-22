@@ -19,6 +19,7 @@ export function SolvePanel() {
     currentSteps,
     currentVisualization,
     currentVariables,
+    fallbackContent,
     setCurrentVariables,
     startStream,
     stopStream,
@@ -30,36 +31,21 @@ export function SolvePanel() {
   const { providers, activeProviderId } = useAIStore();
 
   const [input, setInput] = useState("");
-  const [fallbackContent, setFallbackContent] = useState<string | null>(null);
   const [stepsOpen, setStepsOpen] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const skipHydrateRef = useRef(false);
 
-  // Hydrate session state when switching between sessions
-  // NOTE: Do NOT stop the stream here — let it run to completion in the
-  // background so switching back shows the result without losing progress.
+  // Hydrate session state when switching between sessions.
+  // Do NOT stop the stream — let it run to completion in the background.
   useEffect(() => {
     if (skipHydrateRef.current) {
       skipHydrateRef.current = false;
       return;
     }
     // If returning to the session that's still streaming, just show streaming UI
-    if (streamingSessionId === activeSessionId) {
-      setFallbackContent(null);
-      return;
-    }
+    if (streamingSessionId === activeSessionId) return;
     // Hydrate the session's saved state (stream continues in background)
-    const session = sessions.find((s) => s.id === activeSessionId);
-    if (session?.response) {
-      hydrateFromSnapshot(activeSessionId);
-      setFallbackContent(null);
-    } else if (session?.rawContent) {
-      hydrateFromSnapshot(activeSessionId);
-      setFallbackContent(session.rawContent);
-    } else {
-      hydrateFromSnapshot(activeSessionId);
-      setFallbackContent(null);
-    }
+    hydrateFromSnapshot(activeSessionId);
   }, [activeSessionId]);
 
   const isConfigured = providers.some((p) => p.hasApiKey);
@@ -81,7 +67,6 @@ export function SolvePanel() {
     skipHydrateRef.current = true;
     addSession(newSession);
     setInput("");
-    setFallbackContent(null);
 
     // Store owns the full stream lifecycle
     startStream(sessionId, activeProviderId, text);
@@ -192,16 +177,6 @@ export function SolvePanel() {
               )}
             </div>
 
-            {stepsOpen && activeSession && (
-              <div className="shrink-0 border-t border-border bg-surface px-5 py-3">
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5">
-                  题目
-                </div>
-                <div className="text-xs text-foreground leading-relaxed line-clamp-2">
-                  {activeSession.originalPrompt}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Right: collapsible steps sidebar */}

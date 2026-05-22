@@ -28,6 +28,7 @@ interface SolveState {
   currentSteps: SolveResponse["steps"];
   currentVisualization: SolveResponse["visualization"];
   currentVariables: Record<string, number>;
+  fallbackContent: string | null;
 
   // Actions
   setActiveSessionId: (id: string) => void;
@@ -43,59 +44,62 @@ interface SolveState {
   loadFromDb: () => Promise<void>;
 }
 
-const SOLVE_SYSTEM_PROMPT = `你是一个专业的数学、物理、化学解题AI助手。学生会给你一道题目，你需要：
+const SOLVE_SYSTEM_PROMPT = `你是一个专业的数学、物理、化学解题引擎。严格按以下流程处理学生的题目：
 
-1. 详细分步解答这道题
-2. 如果题目涉及函数、几何坐标、不等式等可被几何具象化的题型，同时给出可视化配置
+## 工作流程
+1. **诊断**：判断题目是否包含函数图像、几何图形、坐标轨迹、不等式区域等可可视化元素
+2. **拆解**：提取所有独立变量（参数 a, k, b 等）
+3. **降级**：将 LaTeX 公式转换为程序可求值的算术表达式
+4. **输出**：仅返回下方 JSON，不要输出任何其他文本、解释或 Markdown 标记
 
-你必须严格按照以下JSON格式输出（不要输出任何其他内容）：
+## 输出格式（严格遵守，仅返回此 JSON）
 
-\`\`\`json
 {
   "steps": [
     {
       "title": "步骤标题",
-      "explanation": "详细讲解，支持Markdown和LaTeX公式（用$包裹行内公式，$$包裹行间公式）",
+      "explanation": "详细讲解，支持Markdown和LaTeX（行内$...$，行间$$...$$）",
       "formula": "本步核心公式（可选）"
     }
   ],
+  "visualization": null
+}
+
+当 visualization 不为 null 时格式：
+{
+  "steps": [...],
   "visualization": {
     "type": "function",
     "expressions": [
-      {
-        "expr": "a * x^2 + b * x + c",
-        "label": "f(x)",
-        "color": "chart-1"
-      }
+      { "expr": "a * x^2 + b * x + c", "label": "f(x)", "color": "chart-1" }
     ],
     "variables": [
-      {
-        "name": "a",
-        "min": -5,
-        "max": 5,
-        "default": 1,
-        "step": 0.1
-      }
+      { "name": "a", "min": -5, "max": 5, "default": 1, "step": 0.1 }
     ],
     "xRange": [-10, 10],
     "yRange": [-10, 10]
   }
 }
-\`\`\`
 
-规则：
-- steps数组必须包含至少1个步骤
-- explanation中公式使用LaTeX格式：行内用$...$，行间用$$...$$
-- expressions.expr必须是可求值的代数表达式：
-  - 乘法必须写*（如a*x^2而非ax^2）
-  - 指数用^（如x^2）
-  - 不要使用JavaScript的Math对象（如Math.exp(x)），直接写函数名（如exp(x)、sin(x)、cos(x)、sqrt(x)、log(x)、abs(x)）
-  - 常量用PI和E（如2*PI*x）
-- color只能是chart-1到chart-5
-- 如果题目无法可视化（如纯文字推导、概率计算），将visualization设为null
-- 如果题目有参数可以调节（如函数中的系数），在variables中声明
-- 如果题目没有可调参数，variables可以为空数组
-- xRange和yRange根据题目合理设定`;
+## 表达式降级规则（关键）
+- 乘法必须写 *：2*x（不是 2x）
+- 幂运算用 ^：x^2
+- 指数函数：exp(x)（不是 Math.exp(x)）
+- 对数：log(x) 或 log(x)/log(10)
+- 三角函数：sin(x), cos(x), tan(x)
+- 常量：PI, E
+- 禁止使用 JavaScript Math 对象
+
+## 可视化规则
+- 仅当题目涉及函数/几何/坐标/不等式时才生成 visualization
+- 纯文字推导、概率计算、排列组合 → visualization 设为 null
+- viewport（xRange/yRange）必须根据题目合理推算，确保曲线在画布内可见
+- 如果题目有可调参数，在 variables 中声明；无参数则 variables 为空数组
+- color 仅用 chart-1 到 chart-5
+
+## steps 规则
+- 至少 1 个步骤
+- explanation 中的数学公式用 LaTeX：行内 $...$，行间 $$...$$`;
 
 export const useSolveStore = create<SolveState>((set, get) => ({
   sessions: [],
@@ -107,6 +111,7 @@ export const useSolveStore = create<SolveState>((set, get) => ({
   currentSteps: [],
   currentVisualization: null,
   currentVariables: {},
+  fallbackContent: null,
 
   setActiveSessionId: (id) => {
     set({ activeSessionId: id });
@@ -173,7 +178,12 @@ export const useSolveStore = create<SolveState>((set, get) => ({
   hydrateFromSnapshot: (sessionId) => {
     const session = get().sessions.find((s) => s.id === sessionId);
     if (!session || !session.response) {
-      set({ currentSteps: [], currentVisualization: null, currentVariables: {} });
+      set({
+        currentSteps: [],
+        currentVisualization: null,
+        currentVariables: {},
+        fallbackContent: session?.rawContent ?? null,
+      });
       return;
     }
 
@@ -189,6 +199,7 @@ export const useSolveStore = create<SolveState>((set, get) => ({
       currentSteps: session.response.steps,
       currentVisualization: viz,
       currentVariables: vars,
+      fallbackContent: null,
     });
   },
 
@@ -253,17 +264,35 @@ export const useSolveStore = create<SolveState>((set, get) => ({
               currentSteps: parsed.steps,
               currentVisualization: viz,
               currentVariables: vars,
+              fallbackContent: null,
             });
           }
         } else {
           get().updateSession(sessionId, { rawContent: fullContent });
           if (get().activeSessionId === sessionId) {
-            set({ currentSteps: [], currentVisualization: null, currentVariables: {} });
+            set({
+              currentSteps: [],
+              currentVisualization: null,
+              currentVariables: {},
+              fallbackContent: fullContent,
+            });
           }
         }
       } catch (err: unknown) {
         if ((err as Error).name !== "AbortError") {
           console.error("[SolveStore] stream error:", err);
+          // Show error + any partial content as fallback
+          const errorHint = `[错误] AI 生成中断: ${(err as Error).message?.slice(0, 200)}`;
+          const fallback = fullContent ? `${fullContent}\n\n${errorHint}` : errorHint;
+          get().updateSession(sessionId, { rawContent: fallback });
+          if (get().activeSessionId === sessionId) {
+            set({
+              currentSteps: [],
+              currentVisualization: null,
+              currentVariables: {},
+              fallbackContent: fallback,
+            });
+          }
         } else if (fullContent) {
           // Save partial content on abort
           get().updateSession(sessionId, { rawContent: fullContent });
